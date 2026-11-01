@@ -82,7 +82,7 @@ export class Net {
     this.peer = pr;
     pr.on('open', () => {
       if (this.peer !== pr) return;
-      const c = pr.connect(this.hostId, { serialization: 'raw', reliable: false });
+      const c = pr.connect(this.hostId, { reliable: true });
       const to = setTimeout(() => { if (this.peer === pr && !c.open) this.asHost(); }, 7000);
       c.on('open', () => { clearTimeout(to); this.hostConn = c; this.p2pUp = true; });
       c.on('data', d => { let m; try { m = JSON.parse(d); } catch (_) { return; } this.deliver(m); });
