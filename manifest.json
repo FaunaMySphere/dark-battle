@@ -1,0 +1,17 @@
+{
+  "name": "Dark Battle",
+  "short_name": "Dark Battle",
+  "description": "Co-op mythic boss battles in one shared realm. Transform, team up, slay the giants.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "any",
+  "background_color": "#0b0708",
+  "theme_color": "#0b0708",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

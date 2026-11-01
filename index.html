@@ -1,0 +1,72 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0b0708"><meta name="application-name" content="Dark Battle"><meta name="apple-mobile-web-app-title" content="Dark Battle"><link rel="manifest" href="manifest.json"><link rel="icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="description" content="Dark Battle — a mythic co-op boss fight. Everyone online fights the same giant together.">
+<title>Dark Battle</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+<canvas id="c"></canvas>
+<div id="vignette"></div><div id="furyfx"></div><div id="hurtfx"></div>
+
+<div id="hud" class="hidden">
+  <div id="bossbox">
+    <div id="bossname">—</div>
+    <div class="bar boss"><div id="bosslag"></div><div id="bossfill"></div><div class="pip" style="left:33.3%"></div><div class="pip" style="left:66.6%"></div></div>
+    <div class="bar stagger"><div id="stgfill"></div></div>
+  </div>
+  <div id="row2">
+    <div id="mebox">
+      <div id="mename">Warden</div>
+      <div class="bar hp"><div id="hplag"></div><div id="hpfill"></div></div>
+      <div class="bar fury"><div id="furyfill"></div><span id="furytxt">SPECIAL</span></div>
+    </div>
+    <div id="rbtns">
+      <button id="online" class="chip" title="Players online">👥 1</button>
+      <button id="btnlock" class="ib" title="Lock-on (Tab)">🎯</button>
+      <button id="btnmute" class="ib" title="Sound">🔊</button>
+      <button id="btnfs" class="ib" title="Fullscreen (F11)">⛶</button>
+    </div>
+  </div>
+  <div id="roster" class="hidden"></div>
+</div>
+<div id="toast"></div>
+<div id="dmgnums"></div>
+<div id="finprompt" class="hidden"><span class="key">F</span> FINISHER</div>
+<div id="hints" class="hidden"><b>WASD</b> move · <b>Mouse</b> look (Tab = lock-on) · <b>LMB/J</b> light · <b>RMB/K</b> heavy · <b>E</b> special · <b>Q/Shift</b> block (tap = parry) · <b>Space</b> roll · <b>1-6 / T</b> transform · <b>F</b> finisher · <b>H</b> hide</div>
+<div id="objective" class="hidden"></div>
+<canvas id="minimap" class="hidden" width="220" height="220"></canvas>
+<div id="formbadge" class="hidden"></div>
+<div id="wheel" class="screen hidden"><div class="panel"><h2>TRANSFORM</h2><div id="wheelgrid"></div><button id="wheelClose" class="big">CLOSE</button></div></div>
+
+<div id="touch" class="hidden">
+  <div id="joyzone"><div id="joy"><div id="knob"></div></div></div>
+  <button class="tb" id="tLight">⚔<small>LIGHT</small></button>
+  <button class="tb" id="tHeavy">💥<small>HEAVY</small></button>
+  <button class="tb" id="tRoll">🌀<small>ROLL</small></button>
+  <button class="tb" id="tSpecial">✨<small>SPECIAL</small></button>
+  <button class="tb" id="tBlock">🛡<small>BLOCK</small></button>
+  <button class="tb" id="tForm">🎭<small>FORM</small></button>
+</div>
+
+<div id="title" class="screen">
+  <div class="panel">
+    <h1>DARK<span>BATTLE</span></h1>
+    <p class="sub">The giants have woken. Every warrior online fights the same beast — together.</p>
+    <div id="worldinfo">Connecting to the realm…</div>
+    <label for="nameIn">Your warrior's name</label>
+    <input id="nameIn" maxlength="16" autocomplete="off" placeholder="Warden">
+    <button id="enterBtn" class="big">ENTER THE ARENA</button>
+    <div id="ctrlhelp"></div>
+    <div id="installtip"></div>
+  </div>
+</div>
+<div id="deadScreen" class="screen hidden"><div class="panel small"><h2>YOU FELL</h2><p id="deadtxt">Your allies fight on…</p><button id="riseBtn" class="big" disabled>RISE AGAIN</button></div></div>
+<div id="endScreen" class="screen hidden"><div class="panel small"><h2 id="endTitle">VICTORY</h2><p id="endSub"></p><div id="board"></div><p id="endNext"></p><button id="againBtn" class="big">FIGHT AGAIN</button></div></div>
+
+<script src="vendor/peerjs.min.js"></script>
+<script src="vendor/nostr.bundle.js"></script>
+<script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
+<script type="module" src="js/main.js"></script>
+<script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));</script>
+</body></html>
