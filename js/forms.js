@@ -4,7 +4,7 @@ import { buildHero } from './hero.js';
 const add = (p, g, m, x, y, z) => { const o = new THREE.Mesh(g, m); o.position.set(x, y, z); p.add(o); return o; };
 
 export const FORMS = {
-  warrior: { name: 'Vanguard', icon: '🪓', desc: 'Axe & shield. Weighty combos.', light: 'Axe combo', heavy: 'Overhead cleave', special: 'Fury', scd: 22, speed: 6.2, ranged: false },
+  warrior: { name: 'Vanguard', icon: '🗡', desc: 'Sword & cloak. Weighty combos.', light: 'Sword combo', heavy: 'Overhead cleave', special: 'Fury', scd: 22, speed: 6.2, ranged: false },
   soldier: { name: 'Drop Trooper', icon: '🔫', desc: 'Battle-royale style: rifle, shotgun, build walls.', light: 'Rifle', heavy: 'Shotgun blast', special: 'Build Wall', scd: 12, speed: 6.6, ranged: true },
   brick: { name: 'Blockhead', icon: '🧱', desc: 'Blocky brick avatar: hammer bonks & jump slams.', light: 'Hammer bonk', heavy: 'Jump slam', special: 'Tower Jump', scd: 16, speed: 6.4, ranged: false },
   mimic: { name: 'Shadow Mimic', icon: '👁', desc: 'Horror shapeshifter: vanish, then teleport-strike.', light: 'Claw swipe', heavy: 'Lunge', special: 'Shade Step', scd: 15, speed: 7.2, ranged: false },

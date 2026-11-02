@@ -1,16 +1,19 @@
 // Dark Battle — main game. three.js PWA, co-op boss fight in one shared world.
 import * as THREE from 'three';
-import { ARENAS, R, rng } from './arenas.js';
-import { ATK, atkTele, newFight, stepBoss, bossHp, phaseOf, staggerVal, buildBossModel, animateBoss, BOSS_RADIUS, STAGGER_TIME } from './boss.js';
-import { animateHero, hueOf } from './hero.js';
-import { FORMS, FORM_KEYS, SWITCH_CD, buildForm } from './forms.js';
-import { HUB } from './arenas.js';
-import { newWorld, stepWorld, shrinePos, orbPos, relicPos, orbCount, relicCount, orbsGot, relicsGot, hubDone, SHRINE_R, PORTAL_TIME } from './world.js';
-import { lvlDmg } from './boss.js';
+import { ARENAS, R, rng, HUB } from './arenas.js';
+import { ATK, atkTele, bossHp, staggerVal, createBossView, MODS, BOSS_RADIUS, lvlDmg } from './boss.js';
+import { hueOf } from './hero.js';
+import { FORMS, FORM_KEYS, SWITCH_CD } from './forms.js';
+import { Avatar, ANIM_DUR, preloadForms, FORM_ACT } from './avatar.js';
+import { newWorld, stepWorld, shrinePos, orbPos, relicPos, orbCount, relicCount, orbsGot, relicsGot, hubDone, hasQ, SHRINE_R, PORTAL_TIME } from './world.js';
+import { questLabel, advanceQuests, wispPos } from './quests.js';
+import { QuestView } from './questview.js';
+import { loadModel, onModel, modelReady } from './models.js';
+import { Gfx, Q_LEVELS, skyMaterial, copySky } from './gfx.js';
 import { Net } from './net.js';
 import { sfx, unlockAudio, setMuted, isMuted, setDrone } from './audio.js';
 
-const VERSION = '1.0.0';
+const VERSION = '2.0.0';
 const Q = new URLSearchParams(location.search);
 const SOLO = Q.has('solo');
 const ROOM = (Q.get('room') || 'world1').replace(/[^a-z0-9_-]/gi, '').slice(0, 24) || 'world1';
@@ -24,18 +27,16 @@ const now = () => performance.now() / 1000;
 
 // ---------------- renderer / scene ----------------
 const canvas = $('c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: !IS_TOUCH, powerPreference: 'high-performance' });
-let pixelRatio = Math.min(devicePixelRatio || 1, IS_TOUCH ? 1.5 : 2);
-renderer.setPixelRatio(pixelRatio);
-renderer.outputColorSpace = THREE.SRGBColorSpace;
+const gfx = new Gfx(canvas, IS_TOUCH), renderer = gfx.renderer;
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 220);
+const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 260);
 const hemi = new THREE.HemisphereLight(0xffffff, 0x222222, 0.8); scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xffffff, 1); sun.position.set(-10, 25, 12); scene.add(sun);
-function resize() {
-  const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false);
-  camera.aspect = w / h; camera.fov = w < h ? 72 : 58; camera.updateProjectionMatrix();
-}
+const sun = new THREE.DirectionalLight(0xffffff, 1); sun.position.set(-10, 25, 12); scene.add(sun); scene.add(sun.target);
+Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30, near: 1, far: 140 }); sun.shadow.camera.updateProjectionMatrix();
+sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.04;
+gfx.attach(scene, camera, sun);
+const skyDome = new THREE.Mesh(new THREE.SphereGeometry(200, 48, 24), skyMaterial()); skyDome.frustumCulled = false; skyDome.renderOrder = -1; scene.add(skyDome);
+function resize() { gfx.resize(); }
 addEventListener('resize', resize); resize();
 
 // ---------------- arena ----------------
@@ -43,18 +44,22 @@ let sceneKey = null, arena = null, arenaGroup = null, bossModel = null, objGroup
 const ambient = { pts: null, vel: null, type: '' };
 const AMB_N = IS_TOUCH ? 240 : 480;
 const dotTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 32; const g = c.getContext('2d'), gr = g.createRadialGradient(16, 16, 0, 16, 16, 16); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.4, 'rgba(255,255,255,.8)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(0, 0, 32, 32); const t = new THREE.CanvasTexture(c); return t; })();
-const AMB = { embers: [0xff7a30, 0.18, 1], snow: [0xffffff, 0.16, 0], wisps: [0x70ffa8, 0.35, 1], rain: [0x9ab0ff, 0.09, 0], motes: [0xffd890, 0.22, 1] };
-function setScene(key) { // 'hub' or arena index 0..3
+const AMB = { embers: [0xff7a30, 0.18, 1], snow: [0xffffff, 0.16, 0], wisps: [0x70ffa8, 0.35, 1], rain: [0x9ab0ff, 0.09, 0], motes: [0xffd890, 0.22, 1], sand: [0xe8c890, 0.12, 0], spores: [0xb6ff4a, 0.2, 1], fireflies: [0xffe070, 0.2, 1], ash: [0xa09890, 0.14, 0] };
+const FLOATY = t => t === 'wisps' || t === 'motes' || t === 'spores' || t === 'fireflies';
+function setScene(key) { // 'hub' or arena index
   if (key === sceneKey) return;
   sceneKey = key; arena = key === 'hub' ? HUB : ARENAS[key];
   if (arenaGroup) { scene.remove(arenaGroup); disposeTree(arenaGroup); }
-  if (bossModel) { scene.remove(bossModel.root); disposeTree(bossModel.root); bossModel = null; }
+  if (bossModel) { scene.remove(bossModel.root); bossModel.dispose(); disposeTree(bossModel.root); bossModel = null; }
+  qview.clear();
   arenaGroup = new THREE.Group(); arena.build(arenaGroup, rng(1234 + (key === 'hub' ? 99 : key) * 77)); scene.add(arenaGroup);
-  scene.background = new THREE.Color(arena.bg);
+  copySky(skyDome.material, arena.sky); scene.environment = gfx.buildEnv(arena.sky); scene.environmentIntensity = arena.envI ?? 0.7;
+  gfx.setLook(arena);
+  { const sd = arena.sky.sun || [0.3, 0.5, -0.8]; sun.position.set(sd[0] * 50, Math.max(0.6, sd[1]) * 50, sd[2] * 50); }
   scene.fog = new THREE.Fog(arena.fog[0], arena.fog[1], arena.fog[2]);
   hemi.color.setHex(arena.hemi[0]); hemi.groundColor.setHex(arena.hemi[1]); hemi.intensity = arena.hemi[2];
-  sun.color.setHex(arena.key[0]); sun.intensity = arena.key[1];
-  if (arena.boss) { bossModel = buildBossModel(arena.boss); scene.add(bossModel.root); $('bossname').textContent = arena.boss.name; }
+  sun.color.setHex(arena.keyL[0]); sun.intensity = arena.keyL[1];
+  ensureBossModel();
   if (ambient.pts) { scene.remove(ambient.pts); ambient.pts.geometry.dispose(); ambient.pts.material.dispose(); }
   ambient.type = arena.particles;
   const g = new THREE.BufferGeometry(), p = new Float32Array(AMB_N * 3); ambient.vel = new Float32Array(AMB_N * 3);
@@ -67,12 +72,16 @@ function setScene(key) { // 'hub' or arena index 0..3
   objKey = '';
 }
 let objKey = '';
+function ensureBossModel() { if (bossModel || !arena || !arena.boss) return; const v = createBossView(arena.boss); if (v) { bossModel = v; scene.add(v.root); } }
 function respawnAmb(p, k, init) {
   const a = Math.random() * 6.28, d = Math.sqrt(Math.random()) * 34, t = ambient.type;
   p[k * 3] = Math.cos(a) * d; p[k * 3 + 2] = Math.sin(a) * d;
-  p[k * 3 + 1] = t === 'embers' ? (init ? Math.random() * 14 : 0) : t === 'wisps' || t === 'motes' ? 0.5 + Math.random() * 5 : init ? Math.random() * 22 : 22;
+  p[k * 3 + 1] = t === 'embers' ? (init ? Math.random() * 14 : 0) : FLOATY(t) ? 0.5 + Math.random() * 5 : t === 'sand' ? Math.random() * 6 : init ? Math.random() * 22 : 22;
+  if (t === 'sand' && !init) p[k * 3] = -38;
   const v = ambient.vel;
   if (t === 'embers') { v[k * 3] = (Math.random() - .5) * .6; v[k * 3 + 1] = 1 + Math.random() * 2; v[k * 3 + 2] = (Math.random() - .5) * .6; }
+  else if (t === 'sand') { v[k * 3] = 5 + Math.random() * 4; v[k * 3 + 1] = (Math.random() - .6) * .4; v[k * 3 + 2] = 1 + Math.random(); }
+  else if (t === 'ash') { v[k * 3] = .2 + Math.random() * .3; v[k * 3 + 1] = -0.5 - Math.random() * .5; v[k * 3 + 2] = (Math.random() - .5) * .4; }
   else if (t === 'snow') { v[k * 3] = .3 + Math.random() * .4; v[k * 3 + 1] = -1 - Math.random(); v[k * 3 + 2] = (Math.random() - .5) * .5; }
   else if (t === 'rain') { v[k * 3] = 1.5; v[k * 3 + 1] = -22 - Math.random() * 8; v[k * 3 + 2] = .5; }
   else { v[k * 3] = (Math.random() - .5) * .8; v[k * 3 + 1] = (Math.random() - .5) * .3; v[k * 3 + 2] = (Math.random() - .5) * .8; }
@@ -83,12 +92,12 @@ function updateAmbient(dt, t) {
   for (let k = 0; k < AMB_N; k++) {
     const i = k * 3;
     p[i] += v[i] * dt; p[i + 1] += v[i + 1] * dt; p[i + 2] += v[i + 2] * dt;
-    if (ty === 'wisps' || ty === 'motes') { p[i + 1] += Math.sin(t * 1.3 + k) * dt * 0.4; if (Math.random() < dt * 0.05) respawnAmb(p, k, true); }
+    if (FLOATY(ty)) { p[i + 1] += Math.sin(t * 1.3 + k) * dt * 0.4; if (Math.random() < dt * 0.05) respawnAmb(p, k, true); }
     if (p[i + 1] < 0 || p[i + 1] > 16 && ty === 'embers' || Math.abs(p[i]) > 40 || Math.abs(p[i + 2]) > 40) respawnAmb(p, k, false);
   }
   ambient.pts.geometry.attributes.position.needsUpdate = true;
 }
-function disposeTree(o) { o.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) { const ms = Array.isArray(c.material) ? c.material : [c.material]; ms.forEach(m => { if (m.map) m.map.dispose(); if (m.emissiveMap) m.emissiveMap.dispose(); m.dispose(); }); } }); }
+function disposeTree(o) { o.traverse(c => { if (c.userData.shared) return; if (c.geometry) c.geometry.dispose(); if (c.material) { const ms = Array.isArray(c.material) ? c.material : [c.material]; ms.forEach(m => { if (m.map) m.map.dispose(); if (m.emissiveMap) m.emissiveMap.dispose(); m.dispose(); }); } }); }
 
 // ---------------- FX: telegraphs, projectiles, sparks ----------------
 const COL_BLOCK = new THREE.Color(0xffa020), COL_UNBLOCK = new THREE.Color(0xff1a1a), COL_LIVE = new THREE.Color(0xfff2d0);
@@ -202,7 +211,17 @@ const me = {
   form: 'warrior', formCd: 0, scd: {}, sp: null, y: 0, vy: 0, shots: [],
   hitOnce: new Set(), speed: 0,
 };
-let hero = buildForm('warrior', hueOf(myId)); scene.add(hero.root);
+let hero = new Avatar('warrior', hueOf(myId)); scene.add(hero.root);
+const qview = new QuestView(scene);
+let modelsDirty = false; onModel(() => { modelsDirty = true; });
+function rebuildModels() {
+  modelsDirty = false;
+  if (hero.proc && modelReady(hero.spec.model)) { scene.remove(hero.root); hero.dispose(); disposeTree(hero.root); hero = new Avatar(me.form, hueOf(myId)); scene.add(hero.root); if (me.sp && me.sp.k === 'shade') hero.setGhost(true); }
+  for (const p of peers.values()) if (p.model && p.model.proc && modelReady(p.model.spec.model)) { scene.remove(p.model.root); p.model.dispose(); disposeTree(p.model.root); p.model = null; p.ghost = false; }
+  ensureBossModel();
+}
+// load the current form first, then everything else (boss of the next arena first)
+loadModel(FORM_ACT.warrior.model).then(() => preloadForms()).then(() => { for (let i = 0; i < 2; i++) { const A = ARENAS[(W.lvl - 1 + i) % ARENAS.length]; if (A.boss) createBossView(A.boss); } });
 
 // ---------------- remote players ----------------
 const peers = new Map(); // id -> {d, seen, model, label, lx, lz, lry}
@@ -222,11 +241,11 @@ function drawLabel(s, name, hp, dead) {
 }
 function peerModel(p) {
   if (p.model) return;
-  p.form = p.d.fm || 'warrior'; p.model = buildForm(p.form, hueOf(p.id)); scene.add(p.model.root);
+  p.form = p.d.fm || 'warrior'; p.model = new Avatar(p.form, hueOf(p.id)); scene.add(p.model.root);
   p.label = labelSprite(); p.label.position.y = 2.4; p.model.root.add(p.label);
   p.lx = p.d.x; p.lz = p.d.z; p.lry = p.d.ry;
 }
-function removePeer(id) { const p = peers.get(id); if (!p) return; if (p.model) { scene.remove(p.model.root); disposeTree(p.model.root); } peers.delete(id); }
+function removePeer(id) { const p = peers.get(id); if (!p) return; if (p.model) { scene.remove(p.model.root); p.model.dispose(); disposeTree(p.model.root); } peers.delete(id); }
 const activePeers = () => [...peers.values()].filter(p => p.d.en && now() - p.seen < 3.5);
 
 // ---------------- input ----------------
@@ -244,6 +263,7 @@ addEventListener('keydown', e => {
   if (/^Digit[1-6]$/.test(k)) input.form = FORM_KEYS[+k.slice(5) - 1];
   if (k === 'Tab') { e.preventDefault(); toggleLock(); }
   if (k === 'KeyH') $('hints').classList.toggle('hidden');
+  if (k === 'KeyL') toggleQuestLog();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseBlock = false; });
@@ -302,6 +322,13 @@ function toggleFs() {
   else toast('Add to Home Screen for full screen', 2.5);
 }
 $('online').onclick = () => $('roster').classList.toggle('hidden');
+const Q_NAMES = { auto: 'Auto', low: 'Low', med: 'Medium', high: 'High' };
+function updQBtn() { $('btnq').textContent = '⚙' ; $('btnq').title = 'Graphics: ' + Q_NAMES[gfx.setting] + (gfx.setting === 'auto' ? ' (' + Q_NAMES[gfx.level] + ')' : ''); }
+$('btnq').onclick = () => { const i = (Q_LEVELS.indexOf(gfx.setting) + 1) % Q_LEVELS.length; gfx.setSetting(Q_LEVELS[i]); updQBtn(); toast('Graphics: ' + Q_NAMES[gfx.setting] + (gfx.setting === 'auto' ? ' (' + Q_NAMES[gfx.level] + ')' : ''), 1.4); sfx.click(); };
+updQBtn();
+let questOpen = true; try { questOpen = localStorage.getItem('db_ql') !== '0'; } catch (_) {}
+function toggleQuestLog() { questOpen = !questOpen; try { localStorage.setItem('db_ql', questOpen ? '1' : '0'); } catch (_) {} hudCache.tobjective = null; }
+$('objective').addEventListener('click', toggleQuestLog);
 
 // ---------------- form wheel ----------------
 function buildWheel() {
@@ -320,8 +347,8 @@ function transform(k) {
   if (k === me.form || !FORMS[k]) return;
   if (me.formCd > 0) { toast(`Transform ready in ${me.formCd.toFixed(1)}s`, 1); return; }
   if (me.dead || me.anim === 'fin' || me.sp && me.sp.k === 'tower') return;
-  scene.remove(hero.root); disposeTree(hero.root);
-  me.form = k; hero = buildForm(k, hueOf(myId)); hero.baseScale = hero.root.scale.x; scene.add(hero.root);
+  scene.remove(hero.root); hero.dispose(); disposeTree(hero.root);
+  me.form = k; hero = new Avatar(k, hueOf(myId)); hero.baseScale = 1; scene.add(hero.root); loadModel(FORM_ACT[k].model);
   me.formCd = SWITCH_CD; me.sp = null; me.anim = 'idle'; me.combo = 0;
   burst(me.x, 1.2, me.z, 40, 0xc8a0ff, 6, 6); sfx.heal(); toast(FORMS[k].icon + ' ' + FORMS[k].name, 1.2);
   updateFormBadge();
@@ -331,7 +358,7 @@ function updateFormBadge() { const F = FORMS[me.form]; $('formbadge').textConten
 // ---------------- world state ----------------
 let W = newWorld(1, 1);
 let leaderId = null, leaderJt = Infinity, lastWorldMsg = 0;
-let prev = { mode: '', lvl: 0, orbs: 0, rel: 0, sh: 0, st: '', fid: -1, sgi: 0, portal: false, ph: 1 };
+let prev = { qd: new Set(), qerr: 0, qk: {}, mode: '', lvl: 0, orbs: 0, rel: 0, sh: 0, st: '', fid: -1, sgi: 0, portal: false, ph: 1 };
 const boss = () => (W.mode === 'boss' ? W.b : null);
 const bossFighting = () => { const b = boss(); return b && (b.st === 'fight') ; };
 const bossDisp = { x: 0, z: -8, y: 0, ry: 0, flash: 0 };
@@ -349,17 +376,41 @@ function respawnMe(where) {
 
 // ---------------- combat helpers ----------------
 function bossDist() { return Math.hypot(bossDisp.x - me.x, bossDisp.z - me.z); }
-function faceBossIfNear(r = 16) { if (boss() && bossDist() < r) me.ry = Math.atan2(bossDisp.x - me.x, bossDisp.z - me.z); }
+// everything the player can hit: the boss, quest elites and shades
+const myKills = new Set(), shadeDmg = new Map(); me.qd = {};
+function targets() {
+  const out = [], b = boss();
+  if (b) out.push({ k: 'boss', x: bossDisp.x, z: bossDisp.z, r: BOSS_RADIUS });
+  if (W.mode !== 'boss') for (const q of W.q || []) {
+    if (q.done) continue;
+    if (q.t === 'minib' && q.dt < 0 && q.mx) { const d = qview.miniDisp(q.id) || q; out.push({ k: 'mini', q, x: d.x, z: d.z, r: 1.0 }); }
+    if (q.t === 'defend') for (const m of q.m) { if (myKills.has(m.id)) continue; const p = qview.shadePos(q.id, m.id) || m; out.push({ k: 'shade', q, m, x: p.x, z: p.z, r: 0.5 }); }
+  }
+  return out;
+}
+function nearestTarget(x, z, maxD) { let best = null, bd = maxD; for (const tg of targets()) { const d = Math.hypot(tg.x - x, tg.z - z) - tg.r; if (d < bd) { bd = d; best = tg; } } return best; }
+function faceBossIfNear(r = 16) { const tg = nearestTarget(me.x, me.z, r); if (tg) me.ry = Math.atan2(tg.x - me.x, tg.z - me.z); }
 function inMelee(range, arc = 1.3) {
-  if (!boss()) return false;
-  const dx = bossDisp.x - me.x, dz = bossDisp.z - me.z, d = Math.hypot(dx, dz);
-  if (d > range + BOSS_RADIUS) return false;
-  const a = Math.abs(((Math.atan2(dx, dz) - me.ry + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
-  return a < arc || d < BOSS_RADIUS + 0.6;
+  let best = null, bd = 1e9;
+  for (const tg of targets()) {
+    const dx = tg.x - me.x, dz = tg.z - me.z, d = Math.hypot(dx, dz);
+    if (d > range + tg.r) continue;
+    const a = Math.abs(((Math.atan2(dx, dz) - me.ry + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+    if ((a < arc || d < tg.r + 0.6) && d - tg.r < bd) { bd = d - tg.r; best = tg; }
+  }
+  return best;
+}
+function aoe(x, z, r, dmg, stg, y, crit) { for (const tg of targets()) if (Math.hypot(tg.x - x, tg.z - z) < r + tg.r) dealDamage(dmg, stg, tg.x, y, tg.z, crit, tg); }
+function hitQuest(tg, base, x, y, z, crit) {
+  const d = Math.round(base * (furyOn() ? 1.6 : 1));
+  dmgNum(x, y, z, d, crit || d >= 40 ? 'crit' : ''); burst(x, y, z, 10, 0xffc080, 6, 4); sfx.hit();
+  if (tg.k === 'mini') { me.qd[tg.q.id] = (me.qd[tg.q.id] || 0) + d; qview.flashMini(tg.q.id); if (d >= 30) hitStop = Math.max(hitStop, 0.05); }
+  else if (tg.k === 'shade') { const md = (shadeDmg.get(tg.m.id) || 0) + d; shadeDmg.set(tg.m.id, md); if (md >= tg.m.hp) { myKills.add(tg.m.id); burst(tg.x, 1.2, tg.z, 26, 0x9040ff, 7, 4); } }
 }
 const furyOn = () => me.sp && me.sp.k === 'fury';
 const unstop = () => me.sp && me.sp.k === 'unstop';
-function dealDamage(base, stg, x, y, z, crit) {
+function dealDamage(base, stg, x, y, z, crit, tg) {
+  if (tg && tg.k !== 'boss') return hitQuest(tg, base, x, y, z, crit);
   const b = boss(); if (!b || (b.st !== 'fight')) { burst(x, y, z, 6, 0xaaaaaa, 3, 2); return; }
   let d = base * (furyOn() ? 1.6 : 1) * (b.sg ? 1.5 : 1); d = Math.round(d);
   me.dmg += d; me.stg += stg * (unstop() ? 2.5 : 1) * (b.sg ? 0 : 1);
@@ -376,13 +427,14 @@ function fireShot(kind, dmg, stg, speed) {
 function updateShots(dt) {
   for (let i = shots.length - 1; i >= 0; i--) {
     const s = shots[i]; s.t += dt;
-    if (s.kind === 'mage' && s.mine && boss()) { // gentle homing
-      const dx = bossDisp.x - s.x, dz = bossDisp.z - s.z, d = Math.hypot(dx, dz) || 1, sp = Math.hypot(s.vx, s.vz);
+    const ht = s.kind === 'mage' && s.mine ? nearestTarget(s.x, s.z, 30) : null;
+    if (ht) { // gentle homing
+      const dx = ht.x - s.x, dz = ht.z - s.z, d = Math.hypot(dx, dz) || 1, sp = Math.hypot(s.vx, s.vz);
       s.vx = lerp(s.vx, dx / d * sp, dt * 3); s.vz = lerp(s.vz, dz / d * sp, dt * 3);
     }
     s.x += s.vx * dt; s.z += s.vz * dt; s.mesh.position.set(s.x, s.y, s.z);
     let dead = s.t > 1.2 || Math.hypot(s.x, s.z) > R + 8;
-    if (!dead && boss() && Math.hypot(s.x - bossDisp.x, s.z - bossDisp.z) < BOSS_RADIUS) { dead = true; if (s.mine) dealDamage(s.dmg, s.stg, s.x, s.y + 1, s.z); else burst(s.x, s.y, s.z, 6, 0xffffff, 4, 3); }
+    if (!dead) for (const tg of (s.mine ? targets() : boss() ? [{ k: 'boss', x: bossDisp.x, z: bossDisp.z, r: BOSS_RADIUS }] : [])) if (Math.hypot(s.x - tg.x, s.z - tg.z) < tg.r + 0.25) { dead = true; if (s.mine) dealDamage(s.dmg, s.stg, s.x, s.y + 1, s.z, false, tg); else burst(s.x, s.y, s.z, 6, 0xffffff, 4, 3); break; }
     if (dead) { scene.remove(s.mesh); shots.splice(i, 1); }
   }
   for (let i = novas.length - 1; i >= 0; i--) {
@@ -391,7 +443,7 @@ function updateShots(dt) {
     n.mesh.scale.setScalar(4 * Math.min(1, n.t / 0.8)); n.mesh.material.opacity = 0.25 + 0.3 * Math.sin(n.t * 20);
     if (n.t >= 0.8) {
       burst(n.x, 1.5, n.z, 40, 0x8ad8ff, 10, 8); lightning(n.x, n.z); addShake(0.3);
-      if (n.mine && boss() && Math.hypot(n.x - bossDisp.x, n.z - bossDisp.z) < 4 + BOSS_RADIUS) dealDamage(42, 14, bossDisp.x, 4, bossDisp.z);
+      if (n.mine) aoe(n.x, n.z, 4, 42, 14, 4);
       scene.remove(n.mesh); novas.splice(i, 1);
     }
   }
@@ -417,7 +469,6 @@ function syncWallWardMeshes() {
 }
 
 // ---------------- local player update ----------------
-const ANIM_DUR = { l1: 0.32, l2: 0.32, l3: 0.5, heavy: 0.75, roll: 0.5, shoot: 0.17, blast: 0.5, cast: 0.3, cast2: 0.6, jump: 0.8, lunge: 0.45, pound: 0.8, special: 0.6, fin: 1.1, hurt: 0.3 };
 function startAnim(a) { me.anim = a; me.at = 0; me.hitDone = false; }
 const busy = () => ANIM_DUR[me.anim] && me.at < ANIM_DUR[me.anim];
 function updateMe(dt, gdt) {
@@ -514,19 +565,20 @@ function animHits() {
   if (hitAt === undefined || t < hitAt) return;
   me.hitDone = true;
   const base = { warrior: [14, 26, 38], brick: [12, 12, 0], mimic: [10, 10, 24], brute: [20, 20, 42] }[k] || [10, 10, 0];
-  if (a === 'l1' || a === 'l2' || a === 'l3') { const dmg = a === 'l3' ? base[1] : base[0]; if (inMelee(k === 'brute' ? 3.2 : 2.8)) dealDamage(dmg, a === 'l3' ? 8 : k === 'brute' ? 7 : 4, hx, 2.5, hz); }
-  else if (a === 'heavy') { addShake(0.25); if (inMelee(3.4)) dealDamage(38, 20, hx, 2.5, hz); burst(hx, 0.3, hz, 14, 0xffd0a0, 5, 3); }
-  else if (a === 'blast') { burst(hx, 1.3, hz, 16, 0xffe080, 10, 2); addShake(0.2); if (inMelee(6, 0.6)) dealDamage(34, 10, hx, 2, hz); }
-  else if (a === 'cast2') { if (boss() && bossDist() < 32) novas.push({ x: bossDisp.x, z: bossDisp.z, t: 0, mine: true }); netFx({ t: 'nova', x: +bossDisp.x.toFixed(1), z: +bossDisp.z.toFixed(1) }); }
-  else if (a === 'lunge') { if (inMelee(3, 1.0)) dealDamage(24, 8, hx, 2.5, hz); }
-  else if (a === 'pound') { sfx.slam(); addShake(0.5); burst(me.x, 0.3, me.z, 30, 0xc8a070, 9, 4); if (boss() && bossDist() < 5 + BOSS_RADIUS) dealDamage(42, 26, bossDisp.x, 2, bossDisp.z); }
+  let tg;
+  if (a === 'l1' || a === 'l2' || a === 'l3') { const dmg = a === 'l3' ? base[1] : base[0]; if ((tg = inMelee(k === 'brute' ? 3.2 : 2.8))) dealDamage(dmg, a === 'l3' ? 8 : k === 'brute' ? 7 : 4, hx, 2.5, hz, false, tg); }
+  else if (a === 'heavy') { addShake(0.25); if ((tg = inMelee(3.4))) dealDamage(38, 20, hx, 2.5, hz, false, tg); burst(hx, 0.3, hz, 14, 0xffd0a0, 5, 3); }
+  else if (a === 'blast') { burst(hx, 1.3, hz, 16, 0xffe080, 10, 2); addShake(0.2); if ((tg = inMelee(6, 0.6))) dealDamage(34, 10, hx, 2, hz, false, tg); }
+  else if (a === 'cast2') { const nt = nearestTarget(me.x, me.z, 32); if (nt) { novas.push({ x: nt.x, z: nt.z, t: 0, mine: true }); netFx({ t: 'nova', x: +nt.x.toFixed(1), z: +nt.z.toFixed(1) }); } }
+  else if (a === 'lunge') { if ((tg = inMelee(3, 1.0))) dealDamage(24, 8, hx, 2.5, hz, false, tg); }
+  else if (a === 'pound') { sfx.slam(); addShake(0.5); burst(me.x, 0.3, me.z, 30, 0xc8a070, 9, 4); aoe(me.x, me.z, 5, 42, 26, 2); }
   else if (a === 'fin') { const b = boss(); if (b) { dealDamage(Math.round(b.mx * 0.12), 0, bossDisp.x, 5, bossDisp.z, true); } hitStop = 0.2; addShake(1.2); lightning(bossDisp.x, bossDisp.z); toast('BRUTAL FINISHER!', 1.4); }
 }
 function land() {
   if (me.form === 'brick' && (me.anim === 'jump' || (me.sp && me.sp.k === 'tower'))) {
     const big = me.sp && me.sp.k === 'tower';
     const r = big ? 7 : 4; sfx.slam(); addShake(big ? 1 : 0.4); burst(me.x, 0.3, me.z, big ? 60 : 24, 0xf5cd30, big ? 14 : 8, 5);
-    if (boss() && bossDist() < r + BOSS_RADIUS) dealDamage(big ? 70 : 32, big ? 35 : 18, bossDisp.x, 3, bossDisp.z, big);
+    aoe(me.x, me.z, r, big ? 70 : 32, big ? 35 : 18, 3, big);
     netFx({ t: 'slam', x: +me.x.toFixed(1), z: +me.z.toFixed(1), r });
     if (big) { me.sp = null; me.inv = 0.4; }
     me.anim = 'idle';
@@ -541,7 +593,7 @@ function doSpecial() {
   else if (k === 'mage') { me.ward = { x: me.x, z: me.z, until: now() + 6, key: myId + Math.random().toString(36).slice(2, 5) }; sfx.heal(); toast('🔮 Healing ward', 1); }
   else { me.sp = { k: 'unstop', t: 7 }; sfx.roar(); toast('👊 UNSTOPPABLE', 1.2); addShake(0.5); }
 }
-function setGhost(on) { hero.root.traverse(o => { if (o.material && o.material.transparent !== undefined) { o.material.transparent = true; o.material.opacity = on ? 0.25 : 1; } }); }
+function setGhost(on) { hero.setGhost(on); }
 function shadeStrike() {
   const b = boss(); const back = bossDisp.ry + Math.PI;
   me.x = bossDisp.x + Math.sin(back) * (BOSS_RADIUS + 1); me.z = bossDisp.z + Math.cos(back) * (BOSS_RADIUS + 1);
@@ -579,9 +631,9 @@ function resolveAttack(a, e0, e1, tag) {
     if (walls && walls.length && boltBlocked(a.ox, a.oz, me.x, me.z, walls)) continue;
     if (me.y > 2.5 && a.t !== 'volley') continue; // airborne over shockwaves
     hitKeys.add(key); if (hitKeys.size > 400) hitKeys.clear();
-    takeHit(dmg * lvlDmg(W.lvl), u);
+    takeHit(dmg * lvlDmg(W.lvl) * (a.dm || 1), u);
   }
-  if (A.impacts) A.impacts(a, e0, e1, (x, z, s) => { burst(x, 0.4, z, 22, arena.boss ? arena.boss.accent : 0xffa040, 9 * s, 6); const d = Math.hypot(x - me.x, z - me.z); addShake(Math.max(0, 0.7 - d / 30) * s); sfx.slam(); if (sceneKey === 3) lightning(x, z); });
+  if (A.impacts) A.impacts(a, e0, e1, (x, z, s) => { burst(x, 0.4, z, 22, arena.boss ? arena.boss.accent : 0xffa040, 9 * s, 6); const d = Math.hypot(x - me.x, z - me.z); addShake(Math.max(0, 0.7 - d / 30) * s); sfx.slam(); if (arena.key === 'storm') lightning(x, z); });
 }
 
 // ---------------- world progression (leader + replicas) ----------------
@@ -593,19 +645,22 @@ function candidates() {
 }
 function playersForSim() {
   const ps = [];
-  if (me.entered) ps.push({ id: myId, x: me.x, z: me.z, dead: me.dead, hid: !!(me.sp && me.sp.k === 'shade'), fin: me.fin, dmg: me.dmg, stg: me.stg, fid: me.fid });
-  for (const p of activePeers()) ps.push({ id: p.id, x: p.d.x, z: p.d.z, dead: !!p.d.dead, hid: !!p.d.hid, fin: p.d.fin, dmg: p.d.dmg || 0, stg: p.d.stg || 0, fid: p.d.fid });
+  if (me.entered) ps.push({ id: myId, x: me.x, z: me.z, dead: me.dead, hid: !!(me.sp && me.sp.k === 'shade'), fin: me.fin, dmg: me.dmg, stg: me.stg, fid: me.fid, kl: [...myKills].slice(-30), qd: me.qd });
+  for (const p of activePeers()) ps.push({ id: p.id, x: p.d.x, z: p.d.z, dead: !!p.d.dead, hid: !!p.d.hid, fin: p.d.fin, dmg: p.d.dmg || 0, stg: p.d.stg || 0, fid: p.d.fid, kl: p.d.kl || [], qd: p.d.qd || {} });
   return ps;
 }
 function advanceTimers(dt) { // replica-side timing between leader snapshots
   W.se += dt; if (W.ea) W.ea.e += dt; if (W.portal != null) W.portal += dt;
   const b = W.b; if (W.mode === 'boss' && b) { b.se += dt; if (b.a) b.a.e += dt; if (b.sg) b.sg.t += dt; }
+  advanceQuests(W, dt);
 }
 let isLeader = false;
+const shadeHitT = new Map();
 function worldStep(dt) {
   const c = candidates();
   isLeader = SOLO ? me.entered : (c.length ? c[0].id === myId : false);
   leaderId = c.length ? c[0].id : null; leaderJt = c.length ? c[0].jt : Infinity;
+  const qa0 = new Map(); for (const q of W.q || []) if (q.t === 'minib' && q.a) qa0.set(q.id, [q.a.id, q.a.e]);
   const ea0 = W.ea ? W.ea.e : 0, a0 = W.b && W.b.a ? W.b.a.e : 0, aid = W.b && W.b.a ? W.b.a.id : -1, eid = W.ea ? W.ea.id : -1;
   if (isLeader || (!c.length && !me.entered) || (now() - lastWorldMsg > 4 && !isLeader && !c.length)) {
     const ps = playersForSim();
@@ -615,23 +670,35 @@ function worldStep(dt) {
   // resolve hazards on me (same attack only, else start from its current time)
   if (W.ea) resolveAttack(W.ea, W.ea.id === eid ? ea0 : Math.max(0, W.ea.e - dt), W.ea.e, 'e' + W.fid);
   if (W.b && W.b.a && W.mode === 'boss') resolveAttack(W.b.a, W.b.a.id === aid ? a0 : Math.max(0, W.b.a.e - dt), W.b.a.e, 'b' + W.b.fid);
+  if (W.mode !== 'boss') for (const q of W.q || []) {
+    if (q.done) continue;
+    if (q.t === 'minib' && q.a) { const o = qa0.get(q.id); resolveAttack(q.a, o && o[0] === q.a.id ? o[1] : Math.max(0, q.a.e - dt), q.a.e, 'q' + q.id); }
+    if (q.t === 'defend' && me.entered && !me.dead) for (const m of q.m) { if (myKills.has(m.id)) continue; const p = qview.shadePos(q.id, m.id) || m; if (Math.hypot(p.x - me.x, p.z - me.z) < 1.1 && now() - (m._hitT || shadeHitT.get(m.id) || 0) > 1) { shadeHitT.set(m.id, now()); takeHit(8 * lvlDmg(W.lvl), false); } }
+  }
   detectChanges();
 }
 function detectChanges() {
   const b = W.b;
   if (W.mode !== prev.mode || W.lvl !== prev.lvl) {
     if (W.mode === 'hub') { if (prev.mode) { respawnMe({ x: Math.cos(hueOf(myId) * 6.28) * 5, z: Math.sin(hueOf(myId) * 6.28) * 5 }); toast(`LEVEL ${W.lvl} — Return to Cloudhold`, 3); } }
-    else if (W.mode === 'relics') { if (prev.mode === 'hub') { respawnMe(); sfx.roar(); } toast(`${ARENAS[(W.lvl - 1) % 4].name}: gather the relics!`, 3); }
-    else if (W.mode === 'boss') { sfx.roar(); addShake(1); toast(`${ARENAS[(W.lvl - 1) % 4].boss.name.toUpperCase()} AWAKENS`, 3); if (me.dead) respawnMe(); }
+    else if (W.mode === 'relics') { if (prev.mode === 'hub') { respawnMe(); sfx.roar(); } toast(`${ARENAS[(W.lvl - 1) % ARENAS.length].name}: complete the quests to wake the giant!`, 3); }
+    else if (W.mode === 'boss') { sfx.roar(); addShake(1); toast(`${ARENAS[(W.lvl - 1) % ARENAS.length].boss.name.toUpperCase()} AWAKENS`, 3); if (me.dead) respawnMe(); }
     $('endScreen').classList.add('hidden');
     prev.mode = W.mode; prev.lvl = W.lvl; prev.orbs = W.orbs; prev.rel = W.rel; prev.st = ''; prev.portal = false;
+    prev.qd = new Set((W.q || []).filter(q => q.done).map(q => q.id)); prev.qerr = 0; prev.qk = {};
+    if (W.mode === 'hub') { myKills.clear(); shadeDmg.clear(); me.qd = {}; }
+  }
+  for (const q of W.mode === 'boss' ? [] : W.q || []) {
+    if (q.done && !prev.qd.has(q.id)) { prev.qd.add(q.id); const L = questLabel(q, W, questCnt); sfx.win(); toast(`✅ ${L.ic} ${QUEST_DONE[q.t] || 'Quest complete'}`, 2); }
+    if (q.t === 'runes') { if (q.err > 0 && !prev.qerr) { sfx.lose(); toast('❌ Wrong rune — the sequence resets', 1.4); } prev.qerr = q.err > 0 ? 1 : 0; if (q.k > (prev.qk[q.id] || 0)) sfx.heal(); prev.qk[q.id] = q.k; }
+    if (q.t === 'hunt') { const g = q.got; if (prev.qk[q.id] !== undefined && g > prev.qk[q.id]) sfx.heal(); if (prev.qk[q.id] && !g && q.tm > 44) toast('⏱ Too slow — the wisps scattered. Again!', 2); prev.qk[q.id] = g; }
   }
   if (W.mode === 'hub') {
     const sh = W.sh.filter(v => v >= 1).length; if (sh > prev.sh) { sfx.win(); toast(`Shrine awakened (${sh}/3)`, 1.6); } prev.sh = sh;
-    if (W.orbs !== prev.orbs) { sfx.heal(); toast(`Sky-orb found (${orbsGot(W)}/${orbCount(W.lvl)})`, 1.4); prev.orbs = W.orbs; }
+    if (W.orbs !== prev.orbs && hasQ(W, 'orbs')) { sfx.heal(); toast(`Sky-orb found (${orbsGot(W)}/${orbCount(W.lvl)})`, 1.4); prev.orbs = W.orbs; }
     if (W.portal != null && !prev.portal) { prev.portal = true; toast('The portal opens… prepare!', PORTAL_TIME); sfx.roar(); }
   } else prev.sh = 0;
-  if (W.mode === 'relics' && W.rel !== prev.rel) { sfx.heal(); toast(`Relic claimed (${relicsGot(W)}/${relicCount(W.lvl)})`, 1.4); prev.rel = W.rel; }
+  if (W.mode === 'relics' && W.rel !== prev.rel && hasQ(W, 'relics')) { sfx.heal(); toast(`Relic claimed (${relicsGot(W)}/${relicCount(W.lvl)})`, 1.4); prev.rel = W.rel; }
   if (W.mode === 'boss' && b) {
     if (b.fid !== me.fid) { me.fid = b.fid; me.dmg = 0; me.stg = 0; me.fin = -1; if (me.dead) respawnMe(); }
     if (b.st !== prev.st) {
@@ -645,9 +712,11 @@ function detectChanges() {
     const ph = b.ph; if (ph !== prev.ph) { if (ph > 1) { toast(`PHASE ${ph} — the giant grows furious`, 2); sfx.roar(); addShake(0.8); } prev.ph = ph; }
   }
 }
+const QUEST_DONE = { shrines: 'Shrines awakened', orbs: 'Sky-orbs gathered', relics: 'Relics claimed', runes: 'Rune lock solved', escort: 'The Lantern Spirit is safe', defend: 'Ward circle held', hunt: 'Wisp hunt complete', minib: 'Elite slain' };
+const questCnt = t => t === 'orbs' ? [orbsGot(W), orbCount(W.lvl)] : [relicsGot(W), relicCount(W.lvl)];
 function nameOf(id) { if (id === myId) return myName || 'You'; const p = peers.get(id); return p ? (p.d.nm || 'Warrior') : 'Fallen ally'; }
 function showEnd(win) {
-  const b = W.b, A = ARENAS[(W.lvl - 1) % 4];
+  const b = W.b, A = ARENAS[(W.lvl - 1) % ARENAS.length];
   $('endTitle').textContent = win ? 'VICTORY' : 'DEFEAT';
   $('endSub').textContent = win ? `${A.boss.name} has fallen. Level ${W.lvl} cleared!` : 'The giant prevails… regroup and strike again.';
   const rows = Object.entries(b.dmg).sort((x, y) => y[1] - x[1]).slice(0, 8);
@@ -667,6 +736,7 @@ function sendState() {
   if (me.entered && t - lastSend > 0.07) {
     lastSend = t;
     const st = { k: 'p', en: 1, nm: myName || 'Warrior', fm: me.form, x: +me.x.toFixed(2), z: +me.z.toFixed(2), y: +me.y.toFixed(2), ry: +me.ry.toFixed(2), hp: Math.round(me.hp), an: me.anim, at: +me.at.toFixed(2), dead: me.dead ? 1 : 0, hid: me.sp && me.sp.k === 'shade' ? 1 : 0, fu: furyOn() || unstop() ? 1 : 0, fid: me.fid, dmg: me.dmg, stg: Math.round(me.stg), fin: me.fin, jt: me.jt, sp: +me.speed.toFixed(1) };
+    if (W.mode !== 'boss') { if (myKills.size) st.kl = [...myKills].slice(-30); if (Object.keys(me.qd).length) st.qd = me.qd; }
     if (me.wall && me.wall.until > t) st.wl = [+me.wall.x.toFixed(2), +me.wall.z.toFixed(2), +me.wall.ry.toFixed(2), +(me.wall.until - t).toFixed(1), me.wall.key];
     if (me.ward && me.ward.until > t) st.wd = [+me.ward.x.toFixed(2), +me.ward.z.toFixed(2), +(me.ward.until - t).toFixed(1), me.ward.key];
     net.send(st, 'p');
@@ -757,7 +827,7 @@ function updateBossView(dt, gdt, t) {
   if (W.mode === 'relics' || !b) { // dormant giant looms outside the ring
     m.root.visible = W.mode === 'relics';
     m.root.position.set(0, -2, -(R + 9)); m.root.rotation.y = 0;
-    animateBoss(m, t, W.ea ? 'meteors' : '', W.ea ? Math.min(1, W.ea.e / 1.2) : 0, -1, false, 1, '');
+    m.update(gdt, t, { mode: W.ea ? 'meteors' : '', e: W.ea ? W.ea.e : 0, T: W.ea ? atkTele(W.ea) : 1, walking: false, phase: 1, st: '' }); m.setFlash(0);
     bossDisp.x = 0; bossDisp.z = -(R + 9);
     return;
   }
@@ -781,9 +851,9 @@ function updateBossView(dt, gdt, t) {
   m.root.position.set(bossDisp.x, bossDisp.y, bossDisp.z); m.root.rotation.y = bossDisp.ry;
   const st = b.st === 'win' ? 'dead' : b.sg ? 'stagger' : '';
   if (b.st === 'win') m.root.position.y = -Math.min(6, b.se * 0.8);
-  animateBoss(m, t, mode, k, after, walking, b.ph, st);
+  m.update(gdt, t, { mode: b.st === 'intro' ? 'roar' : mode, e: b.st === 'intro' ? b.se : b.a ? b.a.e : 0, T: b.st === 'intro' ? 2.4 : b.a ? atkTele(b.a) : 1, walking, fast: b.ph >= 3, phase: b.ph || 1, st });
   bossDisp.flash = Math.max(0, bossDisp.flash - dt);
-  m.skin.emissive.setHex(bossDisp.flash > 0 ? 0x664444 : b.sg ? 0x333300 : 0); m.armor.emissive.setHex(bossDisp.flash > 0 ? 0x553333 : 0);
+  m.setFlash(bossDisp.flash > 0 ? 1 : b.sg ? 0.3 : 0);
 }
 const _bolt = new THREE.Object3D();
 function updateBossFx() {
@@ -808,14 +878,14 @@ function updatePeers(dt, t) {
     if (now() - p.seen > 9) { removePeer(id); continue; }
     if (!p.d.en) continue;
     peerModel(p);
-    if ((p.d.fm || 'warrior') !== p.form) { scene.remove(p.model.root); disposeTree(p.model.root); p.model = null; peerModel(p); }
+    if ((p.d.fm || 'warrior') !== p.form) { scene.remove(p.model.root); p.model.dispose(); disposeTree(p.model.root); p.model = null; p.ghost = false; loadModel(FORM_ACT[p.d.fm || 'warrior'].model); peerModel(p); }
     const k = Math.min(1, dt * 12);
     p.lx = lerp(p.lx, p.d.x, k); p.lz = lerp(p.lz, p.d.z, k); p.lry = angLerp(p.lry, p.d.ry, k);
     p.model.root.position.set(p.lx, p.d.y || 0, p.lz); p.model.root.rotation.y = p.lry;
     p.model.root.visible = now() - p.seen < 3.5;
     if (p.an !== p.d.an || p.lastAt > p.d.at) { p.an = p.d.an; p.at = p.d.at; } p.lastAt = p.d.at; p.at += dt;
-    animateHero(p.model, p.d.dead ? 'dead' : p.d.an, p.at, p.d.sp || 0, t + id.length, true, !!p.d.fu);
-    const ghost = !!p.d.hid; if (ghost !== !!p.ghost) { p.ghost = ghost; p.model.root.traverse(o => { if (o.material && o !== p.label) { o.material.transparent = true; o.material.opacity = ghost ? 0.3 : 1; } }); }
+    p.model.update(dt, p.d.dead ? 'dead' : p.d.an, p.at, p.d.sp || 0, t + id.length, !!p.d.fu);
+    const ghost = !!p.d.hid; if (ghost !== !!p.ghost) { p.ghost = ghost; p.model.setGhost(ghost); }
     drawLabel(p.label, p.d.nm || 'Warrior', p.d.hp, !!p.d.dead);
   }
 }
@@ -849,13 +919,8 @@ function updateHud() {
   document.body.classList.toggle('hubmode', !fighting);
   $('objective').classList.toggle('hidden', !!fighting || !me.entered);
   if (fighting) { const hp = bossHp(b) / b.mx; setW('bossfill', hp); setW('bosslag', hp); setW('stgfill', staggerVal(b)); document.body.classList.toggle('staggered', !!b.sg); setText('bossname', esc(`${ARENAS[b.ar].boss.name} · Lv ${W.lvl}`)); }
-  else if (W.mode === 'hub') {
-    const sh = W.sh.filter(v => v >= 1).length, orbs = orbsGot(W), on = orbCount(W.lvl);
-    setText('objective', `<b>CLOUDHOLD · LEVEL ${W.lvl}</b><br>${sh >= 3 ? '✅' : '⬜'} Awaken the shrines together (${sh}/3) · ${orbs >= on ? '✅' : '⬜'} Find sky-orbs (${orbs}/${on})` + (W.portal != null ? `<br>🌀 Portal to ${ARENAS[(W.lvl - 1) % 4].name} in ${Math.max(0, PORTAL_TIME - W.portal).toFixed(1)}s` : ''));
-  } else if (W.mode === 'relics') {
-    const n = relicCount(W.lvl), g = relicsGot(W);
-    setText('objective', `<b>${ARENAS[(W.lvl - 1) % 4].name.toUpperCase()} · LEVEL ${W.lvl}</b><br>Claim the relics to summon the giant (${g}/${n}) — dodge the falling hazards!`);
-  }
+  else if (me.entered) setText('objective', questLogHtml());
+  if (fighting) { const mk = (b.mods || []).join(','); if (hudCache.mods !== mk) { hudCache.mods = mk; $('bossmods').innerHTML = (b.mods || []).map(k => `<span class="modchip" title="${esc(MODS[k].d)}">${MODS[k].ic} ${esc(MODS[k].n)}</span>`).join(''); } }
   setW('hpfill', me.hp / me.max); setW('hplag', me.hp / me.max);
   const F = FORMS[me.form], cd = me.scd[me.form] || 0, ready = cd <= 0;
   setW('furyfill', me.sp && me.sp.k !== 'tower' ? me.sp.t / ({ fury: 8, shade: 6, unstop: 7 }[me.sp.k] || 1) : 1 - cd / F.scd);
@@ -876,6 +941,15 @@ function updateHud() {
   }
   const lk = innerWidth + 'x' + innerHeight + (hudCache['tobjective'] || '') + $('objective').className; if (lk !== layoutKey) { layoutKey = lk; layoutHud(); }
   if (deadShown()) { const left = Math.max(0, 4 - me.deadT); $('riseBtn').disabled = left > 0; setText('deadtxt', left > 0 ? `Rising in ${left.toFixed(1)}s…` : 'Your allies need you.'); }
+}
+function questLogHtml() {
+  const A = ARENAS[(W.lvl - 1) % ARENAS.length], title = W.mode === 'hub' ? `CLOUDHOLD · LEVEL ${W.lvl}` : `${A.name.toUpperCase()} · LEVEL ${W.lvl}`;
+  let h = `<b>📜 ${esc(title)}</b>`;
+  if (!questOpen) return h + ` <span class="qlhint">${IS_TOUCH ? '(tap)' : '[L]'}</span>`;
+  for (const q of W.q || []) { const L = questLabel(q, W, questCnt); h += `<div class="ql${L.done ? ' done' : ''}"><span>${L.done ? '✅' : L.ic} ${esc(L.txt)}</span><i style="width:${Math.round(L.p * 100)}%"></i></div>`; }
+  if (W.mode === 'hub') h += W.portal != null ? `<div class="qlfoot">🌀 Portal to ${esc(A.name)} in ${Math.max(0, PORTAL_TIME - W.portal).toFixed(1)}s</div>` : `<div class="qlfoot">Complete every quest to open the portal</div>`;
+  else h += `<div class="qlfoot">Finish them to wake ${esc(A.boss.name)} — dodge the falling hazards!</div>`;
+  return h;
 }
 // keep the objective panel from overlapping the HUD row below it
 let layoutOff = -1;
@@ -902,6 +976,14 @@ function updateMinimap() {
     if (W.portal != null) dot(0, 0, 8, '#ff9a50');
   } else if (W.mode === 'relics') { for (let i = 0; i < relicCount(W.lvl); i++) if (!(W.rel & (1 << i))) { const o = relicPos(W.seed, i); dot(o.x, o.z, 5, '#' + (arena.boss ? arena.boss.accent : 0xffd070).toString(16).padStart(6, '0')); } }
   else if (W.b) dot(bossDisp.x, bossDisp.z, 11, '#e0302a');
+  if (W.mode !== 'boss') for (const q of W.q || []) {
+    if (q.done) continue;
+    if (q.t === 'runes') for (let i = 0; i < 5; i++) { const a = i / 5 * Math.PI * 2 + 0.31; dot(Math.cos(a) * 6.5, Math.sin(a) * 6.5, 3, '#ffe08a'); }
+    else if (q.t === 'escort') { const d = qview.miniDisp(q.id) || q; dot(d.x ?? 0, d.z ?? 0, 6, '#ffc060'); }
+    else if (q.t === 'defend') { mctx.strokeStyle = '#7fd8ff'; mctx.beginPath(); mctx.arc(-q.x * sc, q.z * sc, 4 * sc, 0, 7); mctx.stroke(); for (const m of q.m) if (!myKills.has(m.id)) { const p = qview.shadePos(q.id, m.id) || m; dot(p.x, p.z, 3, '#a050ff'); } }
+    else if (q.t === 'hunt') for (let i = 0; i < q.n; i++) if (!(q.got & (1 << i))) { const w = wispPos(q, i); dot(w.x, w.z, 3, '#b0ffe0'); }
+    else if (q.t === 'minib' && q.dt < 0) { const d = qview.miniDisp(q.id) || q; dot(d.x, d.z, 7, '#ff5a3a'); }
+  }
   for (const p of activePeers()) dot(p.lx ?? p.d.x, p.lz ?? p.d.z, 5, p.d.dead ? '#777' : '#6fd0ff');
   dot(me.x, me.z, 6, '#ffd27a');
   mctx.restore();
@@ -933,46 +1015,49 @@ $('nameIn').addEventListener('keydown', e => { if (e.key === 'Enter') startGame(
 function updateTitleInfo() {
   if (me.entered) return;
   const n = activePeers().length;
-  const where = W.mode === 'hub' ? `Cloudhold (Level ${W.lvl})` : W.mode === 'relics' ? `${ARENAS[(W.lvl - 1) % 4].name} — relic hunt` : `fighting ${ARENAS[(W.lvl - 1) % 4].boss.name}`;
+  const where = W.mode === 'hub' ? `Cloudhold (Level ${W.lvl})` : W.mode === 'relics' ? `${ARENAS[(W.lvl - 1) % ARENAS.length].name} — relic hunt` : `fighting ${ARENAS[(W.lvl - 1) % ARENAS.length].boss.name}`;
   $('worldinfo').textContent = SOLO ? 'Solo mode' : !net.online ? 'Connecting to the realm…' : n ? `⚔ ${n} warrior${n > 1 ? 's' : ''} online · ${where}` : `Realm online · you'll be the first warrior here`;
 }
 
 // ---------------- main loop ----------------
-let last = performance.now(), fpsAcc = 0, fpsN = 0, fpsT = 0, lightningT = 5;
+let lastFps = 0, last = performance.now(), fpsAcc = 0, fpsN = 0, fpsT = 0, lightningT = 5;
 function frame(ms) {
   requestAnimationFrame(frame);
   let dt = Math.min(0.05, (ms - last) / 1000); last = ms; if (dt <= 0) return;
   const t = ms / 1000;
   const gdt = hitStop > 0 ? dt * 0.08 : dt; hitStop = Math.max(0, hitStop - dt);
-  setScene(W.mode === 'hub' ? 'hub' : (W.lvl - 1) % 4);
+  setScene(W.mode === 'hub' ? 'hub' : (W.lvl - 1) % ARENAS.length);
   updateMe(dt, gdt);
   worldStep(dt);
-  setScene(W.mode === 'hub' ? 'hub' : (W.lvl - 1) % 4);
+  setScene(W.mode === 'hub' ? 'hub' : (W.lvl - 1) % ARENAS.length);
   hero.root.position.set(me.x, me.y, me.z); hero.root.rotation.y = me.ry; hero.root.visible = me.entered;
+  if (modelsDirty) rebuildModels(); else if (!bossModel) ensureBossModel();
   hero.shadow.position.y = 0.03 - me.y / hero.root.scale.y;
-  animateHero(hero, me.dead ? 'dead' : me.anim, me.at, me.speed, t, true, furyOn() || unstop());
+  hero.update(gdt, me.dead ? 'dead' : me.anim, me.at, me.speed, t, furyOn() || unstop());
   if (unstop()) hero.root.scale.setScalar(hero.baseScale * 1.2); else hero.root.scale.setScalar(hero.baseScale);
   updateObjects(t);
   updateBossView(dt, gdt, t);
   updateBossFx();
+  qview.sync(W, gdt, t, arena && arena.boss ? arena.boss.accent : 0xffd070);
   updatePeers(dt, t);
   updateShots(dt);
   syncWallWardMeshes();
   updateAmbient(dt, t); updateSparks(gdt); updateLightning(dt); updateDmgNums(dt);
   if (arena && arena.update) arena.update(t);
-  if (sceneKey === 3) { lightningT -= dt; if (lightningT <= 0) { lightningT = 4 + Math.random() * 6; hemi.intensity = 3; lightning((Math.random() - .5) * 80, -40 - Math.random() * 30); setTimeout(() => sfx.thunder(), 300); } hemi.intensity = lerp(hemi.intensity, arena.hemi[2], dt * 4); }
+  skyDome.material.uniforms.t.value = t; skyDome.position.copy(camera.position);
+  if (arena && arena.key === 'storm') { lightningT -= dt; if (lightningT <= 0) { lightningT = 4 + Math.random() * 6; hemi.intensity = 3; lightning((Math.random() - .5) * 80, -40 - Math.random() * 30); setTimeout(() => sfx.thunder(), 300); } hemi.intensity = lerp(hemi.intensity, arena.hemi[2], dt * 4); }
   if (!me.entered) { camYaw += dt * 0.08; me.x = 0; me.z = 0; }
   updateCamera(dt);
   if (me.entered) { updateHud(); updateMinimap(); } else updateTitleInfo();
   if (toastT > 0) { toastT -= dt; if (toastT <= 0) $('toast').classList.remove('on'); }
   sendState();
-  renderer.render(scene, camera);
-  // adaptive resolution
+  gfx.render(t);
+  // auto quality: drop effects / resolution when the frame rate sags
   fpsAcc += dt; fpsN++; fpsT += dt;
-  if (fpsT > 3) { const fps = fpsN / fpsAcc; if (fps < 40 && pixelRatio > 0.75) { pixelRatio = Math.max(0.75, pixelRatio - 0.25); renderer.setPixelRatio(pixelRatio); resize(); } fpsAcc = fpsN = fpsT = 0; }
+  if (fpsT > 3) { const fps = fpsN / fpsAcc; lastFps = fps; if (fps < 40 && me.entered && gfx.downgrade()) updQBtn(); fpsAcc = fpsN = fpsT = 0; }
 }
 hero.baseScale = hero.root.scale.x;
 setScene('hub');
-window.__db = { get W() { return W; }, me, peers, get leader() { return isLeader; }, VERSION, net, transform: k => transform(k), start: startGame };
+window.__db = { get W() { return W; }, get fps() { return lastFps; }, gfx, get hero() { return hero; }, get boss() { return bossModel; }, qview, me, peers, get leader() { return isLeader; }, VERSION, net, transform: k => transform(k), start: startGame };
 requestAnimationFrame(frame);
 console.log('Dark Battle v' + VERSION + ' · room ' + ROOM + (SOLO ? ' (solo)' : ''));

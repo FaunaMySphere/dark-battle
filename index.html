@@ -14,6 +14,7 @@
     <div id="bossname">—</div>
     <div class="bar boss"><div id="bosslag"></div><div id="bossfill"></div><div class="pip" style="left:33.3%"></div><div class="pip" style="left:66.6%"></div></div>
     <div class="bar stagger"><div id="stgfill"></div></div>
+    <div id="bossmods"></div>
   </div>
   <div id="row2">
     <div id="mebox">
@@ -23,6 +24,7 @@
     </div>
     <div id="rbtns">
       <button id="online" class="chip" title="Players online">👥 1</button>
+      <button id="btnq" class="ib" title="Graphics quality">⚙</button>
       <button id="btnlock" class="ib" title="Lock-on (Tab)">🎯</button>
       <button id="btnmute" class="ib" title="Sound">🔊</button>
       <button id="btnfs" class="ib" title="Fullscreen (F11)">⛶</button>
@@ -33,7 +35,7 @@
 <div id="toast"></div>
 <div id="dmgnums"></div>
 <div id="finprompt" class="hidden"><span class="key">F</span> FINISHER</div>
-<div id="hints" class="hidden"><b>WASD</b> move · <b>Mouse</b> look (Tab = lock-on) · <b>LMB/J</b> light · <b>RMB/K</b> heavy · <b>E</b> special · <b>Q/Shift</b> block (tap = parry) · <b>Space</b> roll · <b>1-6 / T</b> transform · <b>F</b> finisher · <b>H</b> hide</div>
+<div id="hints" class="hidden"><b>WASD</b> move · <b>Mouse</b> look (Tab = lock-on) · <b>LMB/J</b> light · <b>RMB/K</b> heavy · <b>E</b> special · <b>Q/Shift</b> block (tap = parry) · <b>Space</b> roll · <b>1-6 / T</b> transform · <b>F</b> finisher · <b>L</b> quest log · <b>H</b> hide</div>
 <div id="objective" class="hidden"></div>
 <canvas id="minimap" class="hidden" width="220" height="220"></canvas>
 <div id="formbadge" class="hidden"></div>
@@ -66,7 +68,7 @@
 
 <script src="vendor/peerjs.min.js"></script>
 <script src="vendor/nostr.bundle.js"></script>
-<script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
+<script type="importmap">{"imports":{"three":"./vendor/three.module.min.js","three/addons":"./vendor/three-addons.min.js"}}</script>
 <script type="module" src="js/main.js"></script>
 <script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));</script>
 </body></html>

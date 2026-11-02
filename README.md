@@ -2,10 +2,12 @@
 
 Co-op mythic boss battles in one shared realm: a three.js PWA hosted on GitHub Pages. **Play:** https://faunamysphere.github.io/dark-battle/
 
-- **Loop:** In the Cloudhold sky hub, everyone works together to awaken 3 shrines and find the sky-orbs. Then a portal sends the whole server to that level's arena. Claim the relics while dodging hazards, and the arena's giant boss awakens. Beat it to reach the next level. Bosses get more HP, more speed and new attack patterns each level, and arenas rotate.
-- **Arenas and bosses:** Molten Caldera (Kharvoth, the Cinder Fiend), Frozen Ruins (Jorvald, the Frost Colossus), Serpent's Barrow (Vessrath, the Grave Serpent), Stormspire Rooftop (Aurunax, the Storm Titan).
+- **Loop:** In the Cloudhold sky hub, everyone works together on that level's quests (shrines plus randomized ones), then a portal sends the whole server to the arena. Finish the arena quests while dodging the dormant giant's hazards and it awakens. Beat it to reach the next level. Levels are endless: boss HP, damage, speed and attack size scale every level, and from level 5 bosses roll elite modifiers (Enraged, Armored, Regenerating, Volatile, Colossal, Swift).
+- **8 arenas and bosses:** Molten Caldera (Kharvoth, the Cinder Wyrm), Frozen Ruins (Jorvald, the Frost Colossus), Serpent's Barrow (Vessrath, the Grave Serpent), Stormspire Rooftop (Aurunax, the Storm Titan), Sunscorched Dunes (Zharkul, the Dune Tyrant), Webwood Hollow (Arachnyx, the Web Matriarch), Bloodmoon Glade (Fenrask, the Moon Devourer), Ossuary Depths (Skarnek, the Ossuary King).
+- **Quests** (randomized per level, more of them at higher levels, quest log with L / tap): shrines, sky-orbs, relics, rune lock puzzle, escort the Lantern Spirit, hold the ward circle against shades, timed wisp hunt, and elite mini-bosses (Gravecaller Ghoul, Bone Reaver, Dire Stalker).
+- **Graphics:** PBR materials, image-based lighting from each arena's procedural sky, soft shadows, bloom, ambient occlusion (High), filmic tone mapping and per-arena color grade/vignette, fog and particles. ⚙ cycles Auto/Low/Medium/High; Auto drops quality when the frame rate sags.
 - **Forms** (switch any time, with a 3 s cooldown):
-  - Vanguard: axe combos, Fury.
+  - Vanguard: sword combos, Fury.
   - Drop Trooper: rifle, shotgun, Build Wall that blocks bolts.
   - Blockhead: hammer, jump slam, Tower Jump.
   - Shadow Mimic: claws, lunge, Shade Step (vanish, then teleport-strike).
@@ -22,13 +24,13 @@ Co-op mythic boss battles in one shared realm: a three.js PWA hosted on GitHub P
   - One shared room (`world1`).
   - The longest-present player is the authoritative leader and simulates the world/boss. Every player reports their cumulative damage, so the boss HP is shared and robust.
   - `?room=name` gives a private room. `?solo` plays offline.
-- **All assets are procedural** (geometry, canvas textures, WebAudio sound). Vendored libraries are listed in `vendor/LICENSES.md`.
+- **Assets:** rigged, animated characters and bosses by Quaternius (CC0, plus the CC-BY 3.0 Animated Wizard). Everything else is procedural (geometry, canvas textures, WebAudio sound). Credits and licenses: `vendor/LICENSES.md`.
 
 ## Controls
 **Desktop:**
 - WASD: move. Mouse: look (click to capture).
 - LMB/J: light. RMB/K: heavy. Q/Shift: block. Space: roll.
-- E: special. 1–6 or T: transform. F: finisher. Tab: lock-on.
+- E: special. 1–6 or T: transform. F: finisher. Tab: lock-on. L: quest log.
 
 **Touch:**
 - Left thumb: joystick. Drag the right side to look.
